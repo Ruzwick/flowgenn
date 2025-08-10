@@ -1,117 +1,71 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>GlassTask – Google Sign-In</title>
-<style>
-  body {
-    font-family: 'Segoe UI', sans-serif;
-    background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
-    height: 100vh;
-    margin: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .card {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 16px;
-    backdrop-filter: blur(12px);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-    padding: 2rem;
-    text-align: center;
-    color: white;
-    width: 320px;
-  }
-  button {
-    background: rgba(255, 255, 255, 0.2);
-    border: none;
-    padding: 12px 20px;
-    border-radius: 8px;
-    color: white;
-    font-size: 1rem;
-    cursor: pointer;
-    transition: 0.3s;
-  }
-  button:hover {
-    background: rgba(255, 255, 255, 0.35);
-  }
-  img {
-    border-radius: 50%;
-    margin-top: 1rem;
-  }
-</style>
-</head>
-<body>
-  <div class="card" id="auth-card">
-    <h2>GlassTask</h2>
-    <p id="status">Sign in to continue</p>
-    <button id="login-btn">Sign in with Google</button>
-    <button id="logout-btn" style="display:none;">Sign Out</button>
-    <div id="user-info" style="display:none;">
-      <img id="user-pic" src="" alt="Profile" width="64" height="64" />
-      <p id="user-name"></p>
-      <p id="user-email"></p>
-    </div>
-  </div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0f172a" />
+    <title>GlassTask — Firebase Task Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="background"></div>
 
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo">🧊</div>
+        <div class="titles">
+          <h1>GlassTask</h1>
+          <p class="subtitle">Your tasks, everywhere. Synced with Firebase.</p>
+        </div>
+      </div>
 
-  // Your Firebase config
-  const firebaseConfig = {
-    apiKey: "AIzaSyAYYq3uWBzUfuVX5H6dzadmRzqRrvNk-3o",
-    authDomain: "glasstask-f4a65.firebaseapp.com",
-    projectId: "glasstask-f4a65",
-    storageBucket: "glasstask-f4a65.appspot.com",
-    messagingSenderId: "1001067063409",
-    appId: "1:1001067063409:web:09d0b0da5f010b64a6c863"
-  };
+      <div class="user-area" id="userArea">
+        <div class="user-info" id="userInfo" hidden>
+          <img id="userPhoto" class="avatar" alt="User avatar" />
+          <span id="userName" class="username"></span>
+        </div>
+        <button id="authButton" class="btn primary">Sign in with Google</button>
+      </div>
+    </header>
 
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-  const provider = new GoogleAuthProvider();
+    <main class="container">
+      <section id="signedOutHero" class="card hero">
+        <h2>Welcome to GlassTask</h2>
+        <p>Sign in to create tasks that sync across your devices in real-time.</p>
+        <button id="heroSignIn" class="btn primary large">Continue with Google</button>
+      </section>
 
-  const loginBtn = document.getElementById("login-btn");
-  const logoutBtn = document.getElementById("logout-btn");
-  const status = document.getElementById("status");
-  const userInfo = document.getElementById("user-info");
-  const userPic = document.getElementById("user-pic");
-  const userName = document.getElementById("user-name");
-  const userEmail = document.getElementById("user-email");
+      <section id="appSection" class="card app" hidden>
+        <form id="addTaskForm" class="add-task">
+          <input id="taskInput" class="input" type="text" placeholder="Add a new task…" autocomplete="off" required />
+          <input id="dueInput" class="input date" type="date" />
+          <button class="btn primary" type="submit">Add</button>
+        </form>
 
-  loginBtn.addEventListener("click", () => {
-    signInWithPopup(auth, provider)
-      .then((result) => {
-        console.log("Signed in:", result.user);
-      })
-      .catch((error) => {
-        console.error("Sign in error:", error);
-      });
-  });
+        <div class="toolbar">
+          <div class="filters">
+            <button data-filter="all" class="chip selected">All</button>
+            <button data-filter="active" class="chip">Active</button>
+            <button data-filter="completed" class="chip">Completed</button>
+            <button id="clearCompleted" class="chip danger" title="Remove completed tasks">Clear Completed</button>
+          </div>
+          <div class="meta" id="taskMeta">0 tasks</div>
+        </div>
 
-  logoutBtn.addEventListener("click", () => {
-    signOut(auth).catch((error) => console.error(error));
-  });
+        <ul id="taskList" class="task-list"></ul>
+      </section>
+    </main>
 
-  onAuthStateChanged(auth, (user) => {
-    if (user) {
-      status.textContent = "Signed in";
-      loginBtn.style.display = "none";
-      logoutBtn.style.display = "inline-block";
-      userInfo.style.display = "block";
-      userPic.src = user.photoURL;
-      userName.textContent = user.displayName;
-      userEmail.textContent = user.email;
-    } else {
-      status.textContent = "Sign in to continue";
-      loginBtn.style.display = "inline-block";
-      logoutBtn.style.display = "none";
-      userInfo.style.display = "none";
-    }
-  });
-</script>
-</body>
-</html>
+    <footer class="app-footer">
+      <span>Made with Firebase • Offline-ready • Realtime sync</span>
+      <a href="https://firebase.google.com/" target="_blank" rel="noreferrer">Learn Firebase</a>
+    </footer>
+
+    <script type="module" src="app.js"></script>
+  </body>
+  </html>
+
+
