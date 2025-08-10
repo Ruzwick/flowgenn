@@ -40,6 +40,11 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// Test Firebase connectivity
+console.log('Firebase initialized with config:', firebaseConfig.projectId);
+console.log('Firestore instance:', db);
+console.log('Auth instance:', auth);
+
 // Enable offline persistence (gracefully fallback on multi-tab)
 enableIndexedDbPersistence(db).catch(() => {
   // ignore; Firestore will still work online
@@ -74,9 +79,10 @@ let currentFilter = "all"; // all | active | completed
 const WEB_CLIENT_ID = "512175308976-n0f58scesvcfnfcbb8jbta2lo0en4947.apps.googleusercontent.com";
 
 const provider = new GoogleAuthProvider();
-provider.setCustomParameters({
-  client_id: WEB_CLIENT_ID
-});
+// Remove manual client_id setting - Firebase handles this automatically
+// provider.setCustomParameters({
+//   client_id: WEB_CLIENT_ID
+// });
 
 async function signInWithGoogle() {
   try {
@@ -95,11 +101,14 @@ async function signOutUser() {
 }
 
 onAuthStateChanged(auth, (user) => {
+  console.log('Auth state changed:', user ? `User: ${user.email} (${user.uid})` : 'No user');
   currentUser = user;
   updateAuthUI(user);
   if (user) {
+    console.log('Starting tasks listener for authenticated user');
     startTasksListener(user.uid);
   } else {
+    console.log('Stopping tasks listener - no user');
     stopTasksListener();
     renderTasks([]);
   }
@@ -133,16 +142,30 @@ authButton.addEventListener("click", () => {
 heroSignIn.addEventListener("click", signInWithGoogle);
 
 // ---- Firestore: Tasks ----
+// Note: For cross-device sync to work, ensure your Firestore security rules allow
+// authenticated users to read/write their own tasks. Example rules:
+// rules_version = '2';
+// service cloud.firestore {
+//   match /databases/{database}/documents {
+//     match /users/{userId}/tasks/{taskId} {
+//       allow read, write: if request.auth != null && request.auth.uid == userId;
+//     }
+//   }
+// }
 function tasksCollectionRef(uid) {
   return collection(db, "users", uid, "tasks");
 }
 
 function startTasksListener(uid) {
   stopTasksListener();
+  console.log('Starting tasks listener for user:', uid);
   const q = query(tasksCollectionRef(uid), orderBy("createdAt", "desc"));
   unsubscribeTasks = onSnapshot(q, (snapshot) => {
     const tasks = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+    console.log('Tasks updated from Firestore:', tasks.length, 'tasks');
     renderTasks(tasks);
+  }, (error) => {
+    console.error('Error listening to tasks:', error);
   });
 }
 
@@ -157,13 +180,20 @@ async function addTask(title, dueDate) {
   if (!currentUser) return;
   const trimmed = title.trim();
   if (!trimmed) return;
-  await addDoc(tasksCollectionRef(currentUser.uid), {
-    title: trimmed,
-    completed: false,
-    dueDate: dueDate || null,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+  console.log('Adding task:', trimmed, 'for user:', currentUser.uid);
+  try {
+    await addDoc(tasksCollectionRef(currentUser.uid), {
+      title: trimmed,
+      completed: false,
+      dueDate: dueDate || null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    console.log('Task added successfully');
+  } catch (error) {
+    console.error('Error adding task:', error);
+    alert('Failed to add task: ' + error.message);
+  }
 }
 
 async function toggleTask(taskId, completed) {
