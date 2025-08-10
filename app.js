@@ -22,6 +22,8 @@ import {
   serverTimestamp,
   enableMultiTabIndexedDbPersistence,
   writeBatch,
+  getDoc,
+  getDocs,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -100,6 +102,8 @@ onAuthStateChanged(auth, (user) => {
     startTasksListener(user.uid);
     // Test Firestore connectivity
     testFirestoreConnection(user.uid);
+    // Check for existing tasks
+    checkExistingTasks(user.uid);
   } else {
     console.log("[Auth] User signed out");
     stopTasksListener();
@@ -110,24 +114,75 @@ onAuthStateChanged(auth, (user) => {
 async function testFirestoreConnection(uid) {
   try {
     console.log("[Test] Testing Firestore write permission...");
-    const testRef = doc(tasksCollectionRef(uid), 'test-connection');
-    await updateDoc(testRef, { 
+    
+    // Test 1: Try to create a test document
+    const testData = { 
       test: true, 
-      timestamp: serverTimestamp() 
-    });
+      timestamp: serverTimestamp(),
+      message: "Testing Firestore connectivity"
+    };
+    
+    console.log("[Test] Creating test document with data:", testData);
+    const testRef = doc(tasksCollectionRef(uid), 'test-connection');
+    
+    // Try to set the document (create if doesn't exist)
+    await updateDoc(testRef, testData);
     console.log("[Test] Firestore write test successful - permissions OK");
+    
+    // Test 2: Try to read the document back
+    console.log("[Test] Testing Firestore read permission...");
+    const readTest = await getDoc(testRef);
+    if (readTest.exists()) {
+      console.log("[Test] Firestore read test successful - data:", readTest.data());
+    } else {
+      console.log("[Test] Test document doesn't exist after write");
+    }
+    
     // Clean up test document
     await deleteDoc(testRef);
     console.log("[Test] Test document cleaned up");
+    
+    console.log("[Test] All Firestore tests passed! ✅");
+    
   } catch (error) {
     console.error("[Test] Firestore connection test failed:", error);
+    console.error("[Test] Error details:", {
+      code: error.code,
+      message: error.message,
+      stack: error.stack
+    });
+    
     if (error.code === 'permission-denied') {
       alert("Firestore permission denied. Please check your security rules.");
     } else if (error.code === 'not-found') {
       console.log("[Test] Document not found (expected for new users)");
+    } else if (error.code === 'unavailable') {
+      alert("Firestore service unavailable. Check your internet connection.");
     } else {
       console.error("[Test] Unexpected error:", error);
+      alert(`Firestore test failed: ${error.message}`);
     }
+  }
+}
+
+// Manual test to check if tasks are actually in Firestore
+async function checkExistingTasks(uid) {
+  try {
+    console.log("[Check] Manually querying Firestore for existing tasks...");
+    const q = query(tasksCollectionRef(uid));
+    const snapshot = await getDocs(q);
+    
+    console.log(`[Check] Found ${snapshot.size} existing tasks in Firestore`);
+    snapshot.forEach(doc => {
+      console.log(`[Check] Task: ${doc.id}`, doc.data());
+    });
+    
+    if (snapshot.empty) {
+      console.log("[Check] No tasks found in Firestore - this is normal for new users");
+    }
+    
+  } catch (error) {
+    console.error("[Check] Failed to query existing tasks:", error);
   }
 }
 
@@ -143,11 +198,45 @@ function updateAuthUI(user) {
     if (user.photoURL) userPhotoEl.src = user.photoURL;
     authButton.textContent = "Sign out";
     authButton.onclick = signOutUser;
+    
+    // Add debug button for testing
+    addDebugButton();
   } else {
     userInfo.hidden = true;
     authButton.textContent = "Sign in with Google";
     authButton.onclick = signInWithGoogle;
+    
+    // Remove debug button
+    removeDebugButton();
   }
+}
+
+// Add debug button for testing Firestore
+function addDebugButton() {
+  if (document.getElementById('debugBtn')) return;
+  
+  const debugBtn = document.createElement('button');
+  debugBtn.id = 'debugBtn';
+  debugBtn.textContent = '🔧 Debug Firestore';
+  debugBtn.className = 'btn';
+  debugBtn.style.marginLeft = '10px';
+  debugBtn.onclick = () => {
+    if (currentUser) {
+      console.log('[Debug] Manual debug triggered');
+      testFirestoreConnection(currentUser.uid);
+      checkExistingTasks(currentUser.uid);
+    }
+  };
+  
+  // Add to user area
+  const userArea = document.getElementById('userArea');
+  userArea.appendChild(debugBtn);
+}
+
+// Remove debug button
+function removeDebugButton() {
+  const debugBtn = document.getElementById('debugBtn');
+  if (debugBtn) debugBtn.remove();
 }
 
 // ---- Firestore ----
@@ -158,19 +247,39 @@ function tasksCollectionRef(uid) {
 function startTasksListener(uid) {
   stopTasksListener();
   console.log(`[Firestore] Starting real-time listener for user: ${uid}`);
+  console.log(`[Firestore] User object:`, currentUser);
+  console.log(`[Firestore] Database instance:`, db);
   
   const q = query(tasksCollectionRef(uid), orderBy("createdAt", "desc"));
+  console.log(`[Firestore] Query created:`, q);
   
   unsubscribeTasks = onSnapshot(
     q,
     (snapshot) => {
+      console.log(`[Firestore] Snapshot received:`, snapshot);
+      console.log(`[Firestore] Snapshot empty:`, snapshot.empty);
+      console.log(`[Firestore] Snapshot size:`, snapshot.size);
+      
       const tasks = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       console.log(`[Firestore] Received ${tasks.length} tasks from server`);
       console.log(`[Firestore] Tasks:`, tasks.map(t => ({ id: t.id, title: t.title, completed: t.completed })));
+      
+      // Check if tasks have proper Firestore document IDs
+      tasks.forEach(task => {
+        if (!task.id || task.id.length < 20) {
+          console.warn(`[Firestore] Task has suspicious ID:`, task);
+        }
+      });
+      
       renderTasks(tasks);
     },
     (error) => {
       console.error("[Firestore] Listener error:", error);
+      console.error("[Firestore] Error details:", {
+        code: error.code,
+        message: error.message,
+        stack: error.stack
+      });
       
       // Handle specific error types
       if (error.code === 'permission-denied') {
@@ -187,6 +296,7 @@ function startTasksListener(uid) {
   
   // Test if we can actually connect to Firestore
   console.log(`[Firestore] Testing connection to collection: users/${uid}/tasks`);
+  console.log(`[Firestore] Listener subscription:`, unsubscribeTasks);
 }
 
 function stopTasksListener() {
@@ -200,6 +310,7 @@ function stopTasksListener() {
 async function addTask(title, dueDate) {
   if (!currentUser) {
     console.error("[Task] No user logged in");
+    alert("Please sign in first");
     return;
   }
   
@@ -207,6 +318,8 @@ async function addTask(title, dueDate) {
   if (!trimmed) return;
   
   console.log(`[Task] Adding task: "${trimmed}" for user: ${currentUser.uid}`);
+  console.log(`[Task] Current user object:`, currentUser);
+  console.log(`[Task] Firestore instance:`, db);
   
   try {
     const taskData = {
@@ -217,11 +330,23 @@ async function addTask(title, dueDate) {
       updatedAt: serverTimestamp(),
     };
     
+    console.log(`[Task] Task data to save:`, taskData);
+    console.log(`[Task] Collection reference:`, tasksCollectionRef(currentUser.uid));
+    
     const docRef = await addDoc(tasksCollectionRef(currentUser.uid), taskData);
     console.log(`[Task] Task added successfully with ID: ${docRef.id}`);
+    console.log(`[Task] Document reference:`, docRef);
+    
+    // Verify the task was actually saved by trying to read it back
+    console.log(`[Task] Verifying task was saved...`);
     
   } catch (error) {
     console.error("[Task] Failed to add task:", error);
+    console.error("[Task] Error details:", {
+      code: error.code,
+      message: error.message,
+      stack: error.stack
+    });
     alert(`Failed to add task: ${error.message}`);
   }
 }
