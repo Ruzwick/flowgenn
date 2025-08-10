@@ -68,7 +68,15 @@ let unsubscribeTasks = null;
 let currentFilter = "all"; // all | active | completed
 
 // ---- Auth ----
+// TODO: Replace with your Firebase Web Client ID from Firebase Console:
+// Authentication → Sign-in method → Google → Web SDK configuration → Web client ID
+// This ensures Google Auth works with your Firebase project
+const WEB_CLIENT_ID = "512175308976-n0f58scesvcfnfcbb8jbta2lo0en4947.apps.googleusercontent.com";
+
 const provider = new GoogleAuthProvider();
+provider.setCustomParameters({
+  client_id: WEB_CLIENT_ID
+});
 
 async function signInWithGoogle() {
   try {
