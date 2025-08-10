@@ -1,6 +1,6 @@
-// GlassTask - Firebase Task Manager
-// Features: Google Auth, Firestore realtime sync, offline persistence, responsive UI
+// GlassTask - Firebase Task Manager (Cross-Sync Fixes)
 
+// ---- Firebase ----
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
 import {
   getAuth,
@@ -20,11 +20,10 @@ import {
   query,
   orderBy,
   serverTimestamp,
-  enableIndexedDbPersistence,
+  enableMultiTabIndexedDbPersistence,
   writeBatch,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 
-// ---- Firebase Config (provided by user) ----
 const firebaseConfig = {
   apiKey: "AIzaSyAYYq3uWBzUfuVX5H6dzadmRzqRrvNk-3o",
   authDomain: "glasstask-f4a65.firebaseapp.com",
@@ -35,20 +34,20 @@ const firebaseConfig = {
   measurementId: "G-EB1T4LSXG4",
 };
 
-// ---- Initialization ----
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
 // Test Firebase connectivity
-console.log('Firebase initialized with config:', firebaseConfig.projectId);
-console.log('Firestore instance:', db);
-console.log('Auth instance:', auth);
+console.log("[Firebase] Initializing with project:", firebaseConfig.projectId);
+console.log("[Firebase] Auth domain:", firebaseConfig.authDomain);
+console.log("[Firebase] Firestore instance:", db);
+console.log("[Firebase] Auth instance:", auth);
 
-// Enable offline persistence (gracefully fallback on multi-tab)
-enableIndexedDbPersistence(db).catch(() => {
-  // ignore; Firestore will still work online
-});
+// ---- Enable multi-tab persistence for better sync ----
+enableMultiTabIndexedDbPersistence(db)
+  .then(() => console.log("[Firestore] Multi-tab persistence enabled"))
+  .catch((err) => console.warn("[Firestore] Persistence failed", err.code));
 
 // ---- DOM Elements ----
 const authButton = document.getElementById("authButton");
@@ -70,19 +69,11 @@ const filterButtons = Array.from(document.querySelectorAll('[data-filter]'));
 // ---- State ----
 let currentUser = null;
 let unsubscribeTasks = null;
-let currentFilter = "all"; // all | active | completed
+let currentFilter = "all";
+let lastTasks = [];
 
 // ---- Auth ----
-// TODO: Replace with your Firebase Web Client ID from Firebase Console:
-// Authentication → Sign-in method → Google → Web SDK configuration → Web client ID
-// This ensures Google Auth works with your Firebase project
-const WEB_CLIENT_ID = "512175308976-n0f58scesvcfnfcbb8jbta2lo0en4947.apps.googleusercontent.com";
-
 const provider = new GoogleAuthProvider();
-// Remove manual client_id setting - Firebase handles this automatically
-// provider.setCustomParameters({
-//   client_id: WEB_CLIENT_ID
-// });
 
 async function signInWithGoogle() {
   try {
@@ -101,19 +92,46 @@ async function signOutUser() {
 }
 
 onAuthStateChanged(auth, (user) => {
-  console.log('Auth state changed:', user ? `User: ${user.email} (${user.uid})` : 'No user');
+  console.log("[Auth] State changed:", user ? user.email : "No user");
   currentUser = user;
   updateAuthUI(user);
   if (user) {
-    console.log('Starting tasks listener for authenticated user');
+    console.log(`[Auth] User authenticated: ${user.email} (${user.uid})`);
     startTasksListener(user.uid);
+    // Test Firestore connectivity
+    testFirestoreConnection(user.uid);
   } else {
-    console.log('Stopping tasks listener - no user');
+    console.log("[Auth] User signed out");
     stopTasksListener();
-    renderTasks([]);
   }
 });
 
+// Test Firestore connection and permissions
+async function testFirestoreConnection(uid) {
+  try {
+    console.log("[Test] Testing Firestore write permission...");
+    const testRef = doc(tasksCollectionRef(uid), 'test-connection');
+    await updateDoc(testRef, { 
+      test: true, 
+      timestamp: serverTimestamp() 
+    });
+    console.log("[Test] Firestore write test successful - permissions OK");
+    // Clean up test document
+    await deleteDoc(testRef);
+    console.log("[Test] Test document cleaned up");
+  } catch (error) {
+    console.error("[Test] Firestore connection test failed:", error);
+    if (error.code === 'permission-denied') {
+      alert("Firestore permission denied. Please check your security rules.");
+    } else if (error.code === 'not-found') {
+      console.log("[Test] Document not found (expected for new users)");
+    } else {
+      console.error("[Test] Unexpected error:", error);
+    }
+  }
+}
+
+// ---- UI Updates ----
 function updateAuthUI(user) {
   const isSignedIn = Boolean(user);
   signedOutHero.hidden = isSignedIn;
@@ -122,11 +140,7 @@ function updateAuthUI(user) {
   if (isSignedIn) {
     userInfo.hidden = false;
     userNameEl.textContent = user.displayName || user.email || "User";
-    if (user.photoURL) {
-      userPhotoEl.src = user.photoURL;
-    } else {
-      userPhotoEl.removeAttribute("src");
-    }
+    if (user.photoURL) userPhotoEl.src = user.photoURL;
     authButton.textContent = "Sign out";
     authButton.onclick = signOutUser;
   } else {
@@ -136,101 +150,129 @@ function updateAuthUI(user) {
   }
 }
 
-authButton.addEventListener("click", () => {
-  if (currentUser) signOutUser(); else signInWithGoogle();
-});
-heroSignIn.addEventListener("click", signInWithGoogle);
-
-// ---- Firestore: Tasks ----
-// Note: For cross-device sync to work, ensure your Firestore security rules allow
-// authenticated users to read/write their own tasks. Example rules:
-// rules_version = '2';
-// service cloud.firestore {
-//   match /databases/{database}/documents {
-//     match /users/{userId}/tasks/{taskId} {
-//       allow read, write: if request.auth != null && request.auth.uid == userId;
-//     }
-//   }
-// }
+// ---- Firestore ----
 function tasksCollectionRef(uid) {
   return collection(db, "users", uid, "tasks");
 }
 
 function startTasksListener(uid) {
   stopTasksListener();
-  console.log('Starting tasks listener for user:', uid);
+  console.log(`[Firestore] Starting real-time listener for user: ${uid}`);
+  
   const q = query(tasksCollectionRef(uid), orderBy("createdAt", "desc"));
-  unsubscribeTasks = onSnapshot(q, (snapshot) => {
-    const tasks = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-    console.log('Tasks updated from Firestore:', tasks.length, 'tasks');
-    renderTasks(tasks);
-  }, (error) => {
-    console.error('Error listening to tasks:', error);
-  });
+  
+  unsubscribeTasks = onSnapshot(
+    q,
+    (snapshot) => {
+      const tasks = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      console.log(`[Firestore] Received ${tasks.length} tasks from server`);
+      console.log(`[Firestore] Tasks:`, tasks.map(t => ({ id: t.id, title: t.title, completed: t.completed })));
+      renderTasks(tasks);
+    },
+    (error) => {
+      console.error("[Firestore] Listener error:", error);
+      
+      // Handle specific error types
+      if (error.code === 'permission-denied') {
+        console.error("[Firestore] Permission denied - check Firestore security rules");
+        alert("Permission denied. Please check your Firebase configuration.");
+      } else if (error.code === 'unavailable') {
+        console.error("[Firestore] Service unavailable - check internet connection");
+        alert("Service unavailable. Please check your internet connection.");
+      } else {
+        alert(`Firestore error: ${error.message}`);
+      }
+    }
+  );
+  
+  // Test if we can actually connect to Firestore
+  console.log(`[Firestore] Testing connection to collection: users/${uid}/tasks`);
 }
 
 function stopTasksListener() {
   if (unsubscribeTasks) {
     unsubscribeTasks();
     unsubscribeTasks = null;
+    console.log("[Firestore] Listener stopped");
   }
 }
 
 async function addTask(title, dueDate) {
-  if (!currentUser) return;
+  if (!currentUser) {
+    console.error("[Task] No user logged in");
+    return;
+  }
+  
   const trimmed = title.trim();
   if (!trimmed) return;
-  console.log('Adding task:', trimmed, 'for user:', currentUser.uid);
+  
+  console.log(`[Task] Adding task: "${trimmed}" for user: ${currentUser.uid}`);
+  
   try {
-    await addDoc(tasksCollectionRef(currentUser.uid), {
+    const taskData = {
       title: trimmed,
       completed: false,
       dueDate: dueDate || null,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
-    console.log('Task added successfully');
+    };
+    
+    const docRef = await addDoc(tasksCollectionRef(currentUser.uid), taskData);
+    console.log(`[Task] Task added successfully with ID: ${docRef.id}`);
+    
   } catch (error) {
-    console.error('Error adding task:', error);
-    alert('Failed to add task: ' + error.message);
+    console.error("[Task] Failed to add task:", error);
+    alert(`Failed to add task: ${error.message}`);
   }
 }
 
 async function toggleTask(taskId, completed) {
-  if (!currentUser) return;
-  const ref = doc(tasksCollectionRef(currentUser.uid), taskId);
-  await updateDoc(ref, { completed, updatedAt: serverTimestamp() });
+  if (!currentUser) {
+    console.error("[Task] No user logged in for toggle");
+    return;
+  }
+  
+  console.log(`[Task] Toggling task ${taskId} to ${completed}`);
+  
+  try {
+    await updateDoc(doc(tasksCollectionRef(currentUser.uid), taskId), {
+      completed,
+      updatedAt: serverTimestamp(),
+    });
+    console.log(`[Task] Task ${taskId} toggled successfully`);
+  } catch (error) {
+    console.error(`[Task] Failed to toggle task ${taskId}:`, error);
+    alert(`Failed to update task: ${error.message}`);
+  }
 }
 
 async function updateTaskTitle(taskId, newTitle) {
   if (!currentUser) return;
   const trimmed = newTitle.trim();
   if (!trimmed) return;
-  const ref = doc(tasksCollectionRef(currentUser.uid), taskId);
-  await updateDoc(ref, { title: trimmed, updatedAt: serverTimestamp() });
+  await updateDoc(doc(tasksCollectionRef(currentUser.uid), taskId), {
+    title: trimmed,
+    updatedAt: serverTimestamp(),
+  });
 }
 
 async function deleteTask(taskId) {
   if (!currentUser) return;
-  const ref = doc(tasksCollectionRef(currentUser.uid), taskId);
-  await deleteDoc(ref);
+  await deleteDoc(doc(tasksCollectionRef(currentUser.uid), taskId));
 }
 
 async function clearCompletedTasks(taskArray) {
   if (!currentUser) return;
   const batch = writeBatch(db);
-  for (const task of taskArray) {
+  taskArray.forEach((task) => {
     if (task.completed) {
-      const ref = doc(tasksCollectionRef(currentUser.uid), task.id);
-      batch.delete(ref);
+      batch.delete(doc(tasksCollectionRef(currentUser.uid), task.id));
     }
-  }
+  });
   await batch.commit();
 }
 
-// ---- UI Rendering ----
-let lastTasks = [];
-
+// ---- Rendering ----
 function renderTasks(tasks) {
   lastTasks = tasks;
   const filtered = tasks.filter((t) => {
@@ -240,7 +282,6 @@ function renderTasks(tasks) {
   });
 
   taskList.innerHTML = "";
-
   for (const task of filtered) {
     const li = document.createElement("li");
     li.className = `task-item${task.completed ? " completed" : ""}`;
@@ -248,38 +289,38 @@ function renderTasks(tasks) {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = Boolean(task.completed);
-    checkbox.addEventListener("change", () => toggleTask(task.id, checkbox.checked));
+    checkbox.addEventListener("change", () =>
+      toggleTask(task.id, checkbox.checked)
+    );
 
     const main = document.createElement("div");
+    main.className = "task-main";
+
     const title = document.createElement("div");
     title.className = "task-title";
     title.textContent = task.title;
-
-    const details = document.createElement("div");
-    details.className = "task-details";
-    if (task.dueDate) {
-      const due = new Date(task.dueDate);
-      const dueStr = due.toLocaleDateString();
-      const dueEl = document.createElement("span");
-      dueEl.textContent = `Due ${dueStr}`;
-      details.appendChild(dueEl);
-    }
-
     main.appendChild(title);
-    main.appendChild(details);
+
+    if (task.dueDate) {
+      const details = document.createElement("div");
+      details.className = "task-details";
+      details.textContent = `Due ${new Date(task.dueDate).toLocaleDateString()}`;
+      main.appendChild(details);
+    }
 
     const actions = document.createElement("div");
     actions.className = "task-actions";
 
     const editBtn = document.createElement("button");
-    editBtn.className = "icon-btn edit";
     editBtn.textContent = "Edit";
-    editBtn.addEventListener("click", () => openEditPrompt(task));
+    editBtn.onclick = () => {
+      const newTitle = prompt("Edit task", task.title);
+      if (newTitle !== null) updateTaskTitle(task.id, newTitle);
+    };
 
     const delBtn = document.createElement("button");
-    delBtn.className = "icon-btn delete";
     delBtn.textContent = "Delete";
-    delBtn.addEventListener("click", () => deleteTask(task.id));
+    delBtn.onclick = () => deleteTask(task.id);
 
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -291,40 +332,34 @@ function renderTasks(tasks) {
   }
 
   const total = tasks.length;
-  const active = tasks.filter(t => !t.completed).length;
+  const active = tasks.filter((t) => !t.completed).length;
   const completed = total - active;
   taskMeta.textContent = `${active} active • ${completed} completed • ${total} total`;
-}
-
-function openEditPrompt(task) {
-  const newTitle = prompt("Edit task", task.title);
-  if (newTitle != null) {
-    updateTaskTitle(task.id, newTitle);
-  }
 }
 
 // ---- Events ----
 addTaskForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const title = taskInput.value;
-  const due = dueInput.value || null;
-  await addTask(title, due);
+  await addTask(taskInput.value, dueInput.value || null);
   taskInput.value = "";
-  // do not clear due date to allow rapid entry
 });
+
+// Add missing auth button event listeners
+authButton.addEventListener("click", () => {
+  if (currentUser) signOutUser(); else signInWithGoogle();
+});
+
+heroSignIn.addEventListener("click", signInWithGoogle);
 
 filterButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
-    filterButtons.forEach(b => b.classList.remove("selected"));
+    filterButtons.forEach((b) => b.classList.remove("selected"));
     btn.classList.add("selected");
     currentFilter = btn.dataset.filter;
     renderTasks(lastTasks);
   });
 });
 
-clearCompletedBtn.addEventListener("click", () => clearCompletedTasks(lastTasks));
-
-// ---- PWA Hints (optional future work) ----
-// You can add a manifest and service worker for installability if desired.
-
-
+clearCompletedBtn.addEventListener("click", () =>
+  clearCompletedTasks(lastTasks)
+);
